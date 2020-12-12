@@ -1,0 +1,522 @@
+import React, { useState } from "react";
+import "./App.css";
+import Map from "./Map";
+import { Layers, TileLayer, VectorLayerd } from "./Layers";
+import { Circle as CircleStyle, Fill, Stroke, Style } from "ol/style";
+import { toner, vector } from "./Source";
+import { fromLonLat, get } from "ol/proj";
+import GeoJSON from "ol/format/GeoJSON";
+import { Controls, FullScreenControl } from "./Controls";
+import { Cluster, Vector as VectorSources } from "ol/source";
+import { Vector as VectorLayer } from "ol/layer";
+import Feature from "ol/Feature";
+import Point from "ol/geom/Point";
+
+let styles = {
+  Point: new Style({
+    image: new CircleStyle({
+      radius: 10,
+      fill: null,
+      stroke: new Stroke({
+        color: "magenta",
+      }),
+    }),
+  }),
+  Polygon: new Style({
+    stroke: new Stroke({
+      color: "blue",
+      lineDash: [4],
+      width: 3,
+    }),
+    fill: new Fill({
+      color: "rgba(0, 0, 255, 0.1)",
+    }),
+  }),
+  MultiPolygon: new Style({
+    stroke: new Stroke({
+      color: "blue",
+      width: 1,
+    }),
+    fill: new Fill({
+      color: "rgba(0, 0, 255, 0.1)",
+    }),
+  }),
+};
+
+const geojsonObject = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: {
+        kind: "county",
+        name: "Wyandotte",
+        state: "KS",
+      },
+      geometry: {
+        type: "MultiPolygon",
+        coordinates: [
+          [
+            [
+              [-94.8627, 39.202],
+              [-94.901, 39.202],
+              [-94.9065, 38.9884],
+              [-94.8682, 39.0596],
+              [-94.6053, 39.0432],
+              [-94.6053, 39.1144],
+              [-94.5998, 39.1582],
+              [-94.7422, 39.1691],
+              [-94.7751, 39.202],
+              [-94.8627, 39.202],
+            ],
+          ],
+        ],
+      },
+    },
+  ],
+};
+const geojsonObject2 = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: {
+        kind: "county",
+        name: "Johnson",
+        state: "KS",
+      },
+      geometry: {
+        type: "MultiPolygon",
+        coordinates: [
+          [
+            [
+              [-94.9065, 38.9884],
+              [-95.0544, 38.9829],
+              [-95.0544, 38.7365],
+              [-94.9668, 38.7365],
+              [-94.6108, 38.7365],
+              [-94.6108, 38.846],
+              [-94.6053, 39.0432],
+              [-94.8682, 39.0596],
+              [-94.9065, 38.9884],
+            ],
+          ],
+        ],
+      },
+    },
+  ],
+};
+
+var count = 20000;
+var features = new Array(count);
+var e = 9500000;
+for (var i = 0; i < count; ++i) {
+  var coordinates = [2 * e * Math.random() - e, 2 * e * Math.random() - e];
+  features[i] = new Feature(new Point(coordinates));
+}
+
+var source = new VectorSources({
+  features: features,
+});
+
+var clusterSource = new Cluster({
+  distance: 40,
+  source: source,
+});
+
+const App = () => {
+  const [center, setCenter] = useState([0, 0]);
+  const [zoom, setZoom] = useState(2);
+  const [showLayer1, setShowLayer1] = useState(true);
+  const [showLayer2, setShowLayer2] = useState(true);
+
+  return (
+    <div>
+      <Map center={fromLonLat(center)} zoom={zoom}>
+        <Layers>
+          <TileLayer source={toner()} zIndex={0} />
+
+          <VectorLayerd source={clusterSource} />
+        </Layers>
+        <Controls>
+          <FullScreenControl />
+        </Controls>
+      </Map>
+      <div>
+        <input
+          type="checkbox"
+          checked={showLayer1}
+          onChange={(event) => setShowLayer1(event.target.checked)}
+        />{" "}
+        Johnson County
+      </div>
+      <div>
+        <input
+          type="checkbox"
+          checked={showLayer2}
+          onChange={(event) => setShowLayer2(event.target.checked)}
+        />{" "}
+        Wyandotte County
+      </div>
+    </div>
+  );
+};
+
+export default App;
+
+
+import { useContext, useEffect } from "react";
+import MapContext from "../Map/MapContext";
+import OLVectorLayer from "ol/layer/Vector";
+import { Circle as CircleStyle, Fill, Stroke, Style, Text } from "ol/style";
+import {createEmpty, extend, getHeight, getWidth} from 'ol/extent';
+
+var earthquakeFill = new Fill({
+  color: "rgba(255, 153, 0, 0.8)",
+});
+var earthquakeStroke = new Stroke({
+  color: "rgba(255, 204, 0, 0.2)",
+  width: 1,
+});
+var textFill = new Fill({
+  color: "#fff",
+});
+var textStroke = new Stroke({
+  color: "rgba(0, 0, 0, 0.6)",
+  width: 3,
+});
+var invisibleFill = new Fill({
+  color: "rgba(255, 255, 255, 0.01)",
+});
+
+function createEarthquakeStyle(feature) {
+  // 2012_Earthquakes_Mag5.kml stores the magnitude of each earthquake in a
+  // standards-violating <magnitude> tag in each Placemark.  We extract it
+  // from the Placemark's name instead.
+  var name = feature.get("name");
+  var magnitude = parseFloat(name.substr(2));
+  var radius = 5 + 20 * (magnitude - 5);
+
+  return new Style({
+    geometry: feature.getGeometry(),
+    image: new RegularShape({
+      radius1: radius,
+      radius2: 3,
+      points: 5,
+      angle: Math.PI,
+      fill: earthquakeFill,
+      stroke: earthquakeStroke,
+    }),
+  });
+}
+
+var maxFeatureCount;
+var vector = null;
+var calculateClusterInfo = function (resolution) {
+  maxFeatureCount = 0;
+  var features = vector.getSource().getFeatures();
+  var feature, radius;
+  for (var i = features.length - 1; i >= 0; --i) {
+    feature = features[i];
+    var originalFeatures = feature.get("features");
+    var extent = createEmpty();
+    var j = void 0,
+      jj = void 0;
+    for (j = 0, jj = originalFeatures.length; j < jj; ++j) {
+      extend(extent, originalFeatures[j].getGeometry().getExtent());
+    }
+    maxFeatureCount = Math.max(maxFeatureCount, jj);
+    radius = (0.25 * (getWidth(extent) + getHeight(extent))) / resolution;
+    feature.set("radius", radius);
+  }
+};
+
+var currentResolution;
+function styleFunction(feature, resolution) {
+  if (resolution != currentResolution) {
+    calculateClusterInfo(resolution);
+    currentResolution = resolution;
+  }
+  var style;
+  var size = feature.get("features").length;
+  if (size > 1) {
+    style = new Style({
+      image: new CircleStyle({
+        radius: feature.get("radius"),
+        fill: new Fill({
+          color: [255, 153, 0, Math.min(0.8, 0.4 + size / maxFeatureCount)],
+        }),
+      }),
+      text: new Text({
+        text: size.toString(),
+        fill: textFill,
+        stroke: textStroke,
+      }),
+    });
+  } else {
+    var originalFeature = feature.get("features")[0];
+    style = createEarthquakeStyle(originalFeature);
+  }
+  return style;
+}
+
+function selectStyleFunction(feature) {
+  var styles = [
+    new Style({
+      image: new CircleStyle({
+        radius: feature.get("radius"),
+        fill: invisibleFill,
+      }),
+    }),
+  ];
+  var originalFeatures = feature.get("features");
+  var originalFeature;
+  for (var i = originalFeatures.length - 1; i >= 0; --i) {
+    originalFeature = originalFeatures[i];
+    styles.push(createEarthquakeStyle(originalFeature));
+  }
+  return styles;
+}
+
+const VectorLayerd = ({ source, style, zIndex = 0 }) => {
+  const { map } = useContext(MapContext);
+
+  var styleCache = {};
+
+  useEffect(() => {
+    if (!map) return;
+
+    let vectorLayer = new OLVectorLayer({
+      source,
+      style: function (feature) {
+        var size = feature.get("features").length;
+        var style = styleCache[size];
+        if (!style) {
+          style = new Style({
+            image: new CircleStyle({
+              radius: 10,
+              stroke: new Stroke({
+                color: "#fff",
+              }),
+              fill: new Fill({
+                color: "#3399CC",
+              }),
+            }),
+            text: new Text({
+              text: size.toString(),
+              fill: new Fill({
+                color: "#fff",
+              }),
+            }),
+          });
+          styleCache[size] = style;
+        }
+        return style;
+      },
+    });
+
+    map.addLayer(vectorLayer);
+    vectorLayer.setZIndex(zIndex);
+
+    return () => {
+      if (map) {
+        map.removeLayer(vectorLayer);
+      }
+    };
+  }, [map]);
+
+  return null;
+};
+
+export default VectorLayerd;
+
+
+import { useContext, useEffect } from "react";
+import MapContext from "../Map/MapContext";
+import OLVectorLayer from "ol/layer/Vector";
+import {
+  Circle as CircleStyle,
+  Fill,
+  Stroke,
+  Style,
+  Text,
+  RegularShape,
+} from "ol/style";
+import KML from "ol/format/KML";
+import { Tile as TileLayer, Vector as VectorLayer } from "ol/layer";
+import { Cluster, Stamen, Vector as VectorSource } from "ol/source";
+import { createEmpty, extend, getHeight, getWidth } from "ol/extent";
+
+var earthquakeFill = new Fill({
+  color: "rgba(255, 153, 0, 0.8)",
+});
+var earthquakeStroke = new Stroke({
+  color: "rgba(255, 204, 0, 0.2)",
+  width: 1,
+});
+var textFill = new Fill({
+  color: "#fff",
+});
+var textStroke = new Stroke({
+  color: "rgba(0, 0, 0, 0.6)",
+  width: 3,
+});
+var invisibleFill = new Fill({
+  color: "rgba(255, 255, 255, 0.01)",
+});
+
+function createEarthquakeStyle(feature) {
+  // 2012_Earthquakes_Mag5.kml stores the magnitude of each earthquake in a
+  // standards-violating <magnitude> tag in each Placemark.  We extract it
+  // from the Placemark's name instead.
+  var name = feature.get("name");
+  var magnitude = parseFloat(name.substr(2));
+  var radius = 5 + 20 * (magnitude - 5);
+
+  return new Style({
+    geometry: feature.getGeometry(),
+    image: new RegularShape({
+      radius1: radius,
+      radius2: 3,
+      points: 5,
+      angle: Math.PI,
+      fill: earthquakeFill,
+      stroke: earthquakeStroke,
+    }),
+  });
+}
+
+var maxFeatureCount;
+var vector = null;
+var calculateClusterInfo = function (resolution) {
+  maxFeatureCount = 0;
+  var features = vector.getSource().getFeatures();
+  var feature, radius;
+  for (var i = features.length - 1; i >= 0; --i) {
+    feature = features[i];
+    var originalFeatures = feature.get("features");
+    var extent = createEmpty();
+    var j = void 0,
+      jj = void 0;
+    for (j = 0, jj = originalFeatures.length; j < jj; ++j) {
+      extend(extent, originalFeatures[j].getGeometry().getExtent());
+    }
+    maxFeatureCount = Math.max(maxFeatureCount, jj);
+    radius = (0.25 * (getWidth(extent) + getHeight(extent))) / resolution;
+    feature.set("radius", radius);
+  }
+};
+
+var currentResolution;
+function styleFunction(feature, resolution) {
+  if (resolution != currentResolution) {
+    calculateClusterInfo(resolution);
+    currentResolution = resolution;
+  }
+  var style;
+  var size = feature.get("features").length;
+  if (size > 1) {
+    style = new Style({
+      image: new CircleStyle({
+        radius: feature.get("radius"),
+        fill: new Fill({
+          color: [255, 153, 0, Math.min(0.8, 0.4 + size / maxFeatureCount)],
+        }),
+      }),
+      text: new Text({
+        text: size.toString(),
+        fill: textFill,
+        stroke: textStroke,
+      }),
+    });
+  } else {
+    var originalFeature = feature.get("features")[0];
+    style = createEarthquakeStyle(originalFeature);
+  }
+  return style;
+}
+
+function selectStyleFunction(feature) {
+  var styles = [
+    new Style({
+      image: new CircleStyle({
+        radius: feature.get("radius"),
+        fill: invisibleFill,
+      }),
+    }),
+  ];
+  var originalFeatures = feature.get("features");
+  var originalFeature;
+  for (var i = originalFeatures.length - 1; i >= 0; --i) {
+    originalFeature = originalFeatures[i];
+    styles.push(createEarthquakeStyle(originalFeature));
+  }
+  return styles;
+}
+
+const VectorLayerd = ({ source, style, zIndex = 0 }) => {
+  const { map } = useContext(MapContext);
+
+  var styleCache = {};
+
+  useEffect(() => {
+    if (!map) return;
+
+    let vectorLayer = new OLVectorLayer({
+      source,
+      style: function (feature, resolution) {
+        var style;
+        var size = feature.get("features").length;
+        if (size > 1) {
+          style = new Style({
+            image: new CircleStyle({
+              radius: 10,
+              fill: new Fill({
+                color: `rgba(255, 153, 0, ${Math.min(0.8, 0.4 + size)})`,
+              }),
+            }),
+            text: new Text({
+              text: size.toString(),
+              fill: new Fill({
+                color: "#fff",
+              }),
+            }),
+          });
+        } else {
+          var originalFeature = feature.get("features")[0];
+          var name = originalFeature.get("name");
+          var magnitude = parseFloat(name.substr(2));
+          var radius = 5 + 20 * (magnitude - 5);
+          style = new Style({
+            geometry: feature.getGeometry(),
+            image: new CircleStyle({
+              radius: radius,
+              fill: earthquakeFill,
+              stroke: earthquakeStroke,
+            }),
+            text: new Text({
+              text: size.toString(),
+              fill: new Fill({
+                color: "#fff",
+              }),
+            }),
+          });
+        }
+        return style;
+      },
+    });
+
+    map.addLayer(vectorLayer);
+    vectorLayer.setZIndex(zIndex);
+
+    return () => {
+      if (map) {
+        map.removeLayer(vectorLayer);
+      }
+    };
+  }, [map]);
+
+  return null;
+};
+
+export default VectorLayerd;
